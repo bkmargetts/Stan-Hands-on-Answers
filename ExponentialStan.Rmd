@@ -1,0 +1,180 @@
+---
+title: "Exponential Function - Stan"
+author:
+- Ben K. Margetts
+- ben.margetts.14@ucl.ac.uk
+- UCL Great Ormond Street Institute of Child Health
+output:
+  html_document:
+    toc: yes
+  pdf_document:
+    number_sections: yes
+    toc: yes
+---
+
+#Read-in Our Libraries
+
+Read-in 'rstan', 'knitr', and 'ggplot2'. Configure rstan to run on all available cores of your CPU.
+```{r warning=T}
+library(rstan)
+library(knitr)
+library(ggplot2)
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+```
+
+
+#Setup Our Notebook
+
+Set options that warn us of any errors, and maintain the same code structure presented here.
+
+```{r setup}
+opts_chunk$set(message=T, warning=T, tidy.opts=list(width.cutoff=60),tidy=F)
+```
+
+
+
+#Simulate Some Data From an Exponential Function
+
+Let's consider the growth of some biological organism. In ideal conditions, where the organism is not limited by space or essential nutrients, its growth could be described using a simple mathematical function.
+
+The function of interest is:
+
+$$y(t) = \alpha e^{\beta t} $$
+where $y$ is the amount of the organism, $\alpha$ and $\beta$ are parameters that relate to the initial amount and growth rate of the organism , and $t$ is time. We can simulate some data from this function with ease in R using the following code.
+
+
+```{r}
+# Set up the true parameter values
+a <- .8
+b <- 2
+sigma <- .5
+     
+# Simulate data
+x <- (1:1000)/100
+N <- length(x)
+ypred <- a*exp(b*x)
+```
+
+Let's begin by plotting these data.  
+
+```{r}
+plot(x,ypred)
+```
+
+#Introduce Some Noise Into the Dataset
+
+As can be seen, the data has no noise in this current state. To make the data more representative of a true biological system, let's add some error. In this case, we will use a log-normal error model. For some function of $y$ at time $t$ ($y(t)$) with random variable $\eta$, a log-normal error model can be applied using the following expression. $$y(t)*e^{\eta},\\
+\eta \sim \mathcal{N}(0, \sigma)$$
+
+If we make a histogram of the values produced by this error term above, we can begin to visualise what the probability density function of a log-normally distributed random variable may look like.
+
+```{r}
+hist(exp(rnorm(N, 0, sigma)))
+```
+
+
+We can then apply this error model to our data and plot them again.
+
+```{r}
+y <- ypred*exp(rnorm(N, 0, sigma))
+plot(x,y)
+```
+
+
+#Stan Code
+
+Next, we need to write the Stan code necessary to model these data. Our data block will need an integer containing the number of datapoints, $N$, a vector containing our time, $x$, and a vector containing our observations, $y$.
+
+As we are modelling an exponential function, it will be easier for the program to work with log values for our parmeter estimates and our predictions. Doing so will linearise the system, making it easier to estimate our parameters. Inside our parameter block, we will need to ask Stan to estimate $ln(\alpha)$, $ln(\beta)$ and $\sigma$. Remember to bound our standard deviation, $\sigma$, to be $\gt 0$.
+
+Next, inside the transformed parameters block, we will need to convert our log values back to the true parameter estimates of $\alpha$ and $\beta$ so that they can be extracted after fitting our model. For this, recall that $ln(e^{x}) = x$.
+
+Lastly, inside our model block, we need to provide an equation for our model and assign it to a variable (typically called $y_{pred}$). We then need to describe the distribution that our observations $y$ come from. In this case, we would expect them to come from a log-normal distribution, with $\mu = ln(y_{pred})$ and standard deviation $\sigma$.
+
+```{r}
+stanProg <- 
+'data { int N;
+        vector[N] x;
+        vector[N] y;
+     }
+parameters {
+       real log_a;
+       real log_b;
+       real<lower=0> sigma;
+     }
+transformed parameters {
+       real<lower=0> a;
+       real<lower=0> b;
+       a = exp(log_a);
+       b = exp(log_b);
+}
+model {
+       vector[N] ypred;
+       ypred = a*exp(b*x);
+       y ~ lognormal(log(ypred), sigma);
+}'
+```
+
+#Fit the Model
+
+We are now ready to fit a model to our data. We will need to provide stan with the code we wrote above and a list containing $N$, $x$, and $y$. Try running it for 1000 iterations over 4 chains. 
+
+```{r}
+fit <- stan(model_code = stanProg, data=list(N=N, x=x, y=y), iter=1000, chains=4)
+```
+
+#Examining the Output
+
+Assuming all went well with the model fitting, we should now be able to examine the contents of the 'fit' object.
+
+```{r}
+print(fit, pars=c("a", "b", "sigma"))
+```
+
+If all went well, the printed statment above should confirm that we have recovered the correct parameter estimates, with a narrow confidence interval on our posteriors. $\hat{R} \approx 1$ in this case, suggesting that the model converved as expected.
+
+The 'fit' object contains lots of data on the model fitting process, and it is very simple to extract information from. We can extract our mean parameter estimates from the posteriors and plot them using the following code.
+
+```{r}
+a1_mean <- mean(extract(fit)$a)
+b1_mean <- mean(extract(fit)$b)
+sigma_mean <- mean(extract(fit)$sigma)
+plot(fit, pars=c("a", "b", "sigma"))
+```
+
+When debugging a model in Stan, it can be very useful to investigate how the Monte Carlo chains explored the parameter space to converge on the parameter estimates it produced. A traceplot is an easy way to demonstrate this. In this first plot we include the warmup iterations that Stan discards to see how efficiently Stan explored the parameter space.
+
+```{r}
+traceplot(fit, inc_warmup=T, pars=c("a", "b", "sigma"))
+```
+
+And in this second plot, we focus only on the non-warmup chains. In these plots we can see that the mean value for the 4 chains appears to be the same as that reported for our parameter estimates.
+
+```{r}
+traceplot(fit, pars=c("a","b","sigma"))
+```
+
+We can also make a pairs plot with ease to investigate the relationship between our parameters.
+
+```{r}
+pairs(fit, pars=c("a", "b", "sigma"))
+```
+
+#Posterior Predictive Checks
+
+Finally, let's confirm that our parameter estimates can reproduce the data. This may seem obvious, given that we know the true value of the parameters, but when modelling data with unknown parameter values, this step is very important.
+
+```{r}
+ypred = a1_mean*exp(b1_mean*x)
+plot(x,y)
+lines(x,ypred, col='red')
+```
+
+We can also plot our predictions on one axis against our data on the other axis. A linear function with a gradient of 1 and a $y$ intercept of 0 plotted over this should then pass straight through our plotted data, if our predictions are accurate.
+
+```{r}
+plot(y,ypred, log='xy')
+abline(a=0,b=1, col="red")
+```
+

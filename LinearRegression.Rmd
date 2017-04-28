@@ -1,0 +1,171 @@
+---
+title: "A Basic Linear Regression With Stan"
+author:
+- Ben K. Margetts
+- ben.margetts.14@ucl.ac.uk
+- UCL Great Ormond Street Institute of Child Health
+output:
+  html_document:
+    toc: yes
+  pdf_document:
+    number_sections: yes
+    toc: yes
+---
+
+#Read-in Our Libraries:
+
+Read-in 'rstan', 'knitr', and 'ggplot2'. Configure rstan to run on all available cores of your CPU.
+```{r warning=T}
+library(rstan)
+library(knitr)
+library(ggplot2)
+rstan_options(auto_write = TRUE)
+options(mc.cores = parallel::detectCores())
+```
+
+
+#Setup Our Notebook
+
+Set options that warn us of any errors, and maintain the same code structure presented here.
+
+```{r setup}
+opts_chunk$set(message=T, warning=T, tidy.opts=list(width.cutoff=60),tidy=F)
+```
+
+
+#Produce data to model I: Linear model
+
+Standard linear model with data uniformly distributed accross the line. Model is of the form:
+
+$y_n = \alpha + \beta x_n$
+
+Note, in this model, $\alpha$ is our $y$ intercept and $\beta$ is the gradient of our line.
+```{r}
+N <- 100 #Total number of samples
+alpha <- 2 #Value for alpha parameter
+beta <- -3 #Values for beta parameter
+
+#enter the command '?rnorm' into r to see what rnorm does if you are unsure.
+x <- runif(N, 10, 100)
+y <-  alpha + beta * x #Model
+
+#Plot our simulated data
+plot(x, y)
+```
+
+
+#Produce data to model II: Random Error Variable
+
+Now we will add some normally distributed random vairable, $\epsilon$ to our model. The model should now be of the form:
+
+$y_n = \alpha + \beta x_n + \epsilon_n$
+
+$\epsilon_n \sim \mathcal{N}(0,\sigma)$
+```{r}
+epsilon <- rnorm(N, 0,20)
+y <- alpha + beta * x + epsilon
+plot(x, y)
+```
+
+# Stan Code
+
+We now want to write some stan code to fit to these data. We can either save our stan code as a seperate file, or put it as a string here.
+
+We could write this model in a couple of ways. The first involves a for loop over the data.
+```{r}
+stanProg <- 
+'data{
+  int<lower=0> N;
+  vector[N] x;
+  vector[N] y;
+}
+parameters{
+  real alpha;
+  real beta;
+  real<lower=0> sigma;
+}
+model{
+  for (n in 1:N)
+    y[n] ~ normal(alpha + beta * x[n], sigma);
+}'
+```
+
+And the second involves a vectorised expression of the model used in the first example. This version of the model will be more efficient to run.
+
+```{r}
+stanProg <- 
+'data{
+  int<lower=0> N;
+  vector[N] x;
+  vector[N] y;
+}
+parameters{
+  real alpha;
+  real beta;
+  real<lower=0> sigma;
+}
+model{
+    y ~ normal(alpha + beta * x, sigma);
+}'
+```
+
+
+Now, let's execute the stan code:
+
+```{r}
+fit <- stan(model_code=stanProg, data=c("N", "x", "y"))
+```
+
+# Model Results
+
+Let's begin by printing out the results of the model fit.
+
+```{r}
+print(fit)
+```
+
+As can be seen the mean of $\beta$, $\hat{\beta}$, is very close to the true parameter that we used to simulate our data, but the mean of $\alpha$, $\hat{\alpha}$, from our posterior is not paticularly precise. This is to be expected with this number of samples $(n)$. As we increase $n$, our $\hat{\alpha}\rightarrow\alpha$.
+
+It can be useful to see how the different Monte Carlo chains arrived to these parameter estimates. We investigate this using a traceplot. Stan uses a number of warmup samples to explore the parameter space and is very efficient at doing so. Here are the parameter traceplots including the warmup samples:
+
+```{r}
+traceplot(fit, inc_warmup=T)
+```
+
+And here are the traceplots excluding the warmup samples:
+
+```{r}
+traceplot(fit, inc_warmup=F)
+```
+
+
+We can also produce a pairs plot to investigate how our posteriors relate to one another:
+```{r}
+pairs(fit)
+```
+
+#Posterior Predictive Checks
+
+One of the most useful posterior predictive checks we can run is seeing whether our parameter estiamtes, $\hat{\alpha}$ & $\hat{\beta}$ are predictive of the data. To determine this, we can simply fit plot a straight line ontop of our simulated data, using the estimated values for our parameters. These values are very easy to extract from the fit object in rstan:
+
+```{r}
+alpha_hat <- mean(extract(fit)$alpha)
+beta_hat <- mean(extract(fit)$beta)
+```
+
+Producing the following fit to our simulated data:
+
+```{r}
+plot(x,y)
+abline(a=alpha_hat,b=beta_hat, col="red")
+```
+
+We can also plot our predicted values for $y$ against our observed values. The following plot suggests that the fit obtained for this linear regression is reasonable.
+
+```{r}
+pred <- alpha + beta * x
+plot(y,pred)
+```
+
+
+
